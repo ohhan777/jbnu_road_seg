@@ -1,16 +1,16 @@
 import os
 import argparse
 import torch
-from data.kari_building_dataset import KariBuildingDataset
-from utils.utils import fitness_test
-from loss import ce_loss
-#from torchvision.models.segmentation import DeepLabV3_ResNet101_Weights
+from utils.kari_road_dataset import KariRoadDataset
+from utils.metrics import ConfusionMatrix
+from utils.loss import ce_loss
+# from torchvision.models.segmentation import DeepLabV3_ResNet101_Weights
 import torch.optim as optim
 import time
 import wandb
 from pathlib import Path
 from torchvision import models
-from utils.utils import plot_image
+from utils.plots import plot_image
 
 def train(opt):
     epochs = opt.epochs
@@ -21,19 +21,20 @@ def train(opt):
     wandb.config.update(opt)
 
     # Train dataset
-    train_dataset = KariBuildingDataset('./data', train=True)
+    train_dataset = KariRoadDataset('./data/kari-road', train=True)
     # Train dataloader
-    num_workers = min([os.cpu_count(), batch_size])
+    num_workers = min([os.cpu_count(), batch_size, 16])
     train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, 
-                            shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True)
+                            shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=False)
 
     # Validation dataset
-    val_dataset = KariBuildingDataset('./data', train=False)
+    val_dataset = KariRoadDataset('./data/kari-road', train=False)
     val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, 
-                            shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True)
+                            shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=False)
     
     # Network model
-    model = models.segmentation.deeplabv3_resnet101(num_classes=2)
+    num_classes = 10 # background + 1 classes
+    model = models.segmentation.deeplabv3_resnet101(num_classes=num_classes)  
     
     # GPU-support
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -45,7 +46,7 @@ def train(opt):
     optimizer = optim.Adam(model.parameters(), lr=3e-4)
       
     # Learning rate scheduler
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=1)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     # loading a weight file (if exists)
     weight_file = Path('weights')/(name + '.pth')
@@ -58,8 +59,9 @@ def train(opt):
         best_accuracy = checkpoint['best_accuracy']
         print('resumed from epoch %d' % start_epoch)
 
-    (img, label_img) = train_dataset[0]
+    (img, label_img, img_file) = train_dataset[0]
     
+    confusion_matrix = ConfusionMatrix(num_classes)
 
     # training/validation
     for epoch in range(start_epoch, end_epoch):
@@ -71,8 +73,14 @@ def train(opt):
         print('loss=%.4f (took %.2f sec)' % (epoch_loss, t1-t0))
         lr_scheduler.step(epoch_loss)
         # validation
-        val_epoch_loss, val_epoch_iou, val_epoch_pix_accuracy = val_one_epoch(val_dataloader, model, device)
-        print('[validation] loss=%.4f, iou=%.4f, pixel accuracy=%.4f' % (val_epoch_loss, val_epoch_iou, val_epoch_pix_accuracy))
+        val_epoch_loss = val_one_epoch(val_dataloader, model, confusion_matrix, device)
+        val_epoch_iou = confusion_matrix.get_iou()
+        val_epoch_mean_iou = confusion_matrix.get_mean_iou()
+        val_epoch_pix_accuracy = confusion_matrix.get_pix_acc()
+        
+        print('[validation] loss=%.4f, mean iou=%.4f, pixel accuracy=%.4f' % 
+              (val_epoch_loss, val_epoch_mean_iou, val_epoch_pix_accuracy))
+        print('class IoU: [' + ', '.join([('%.4f' % (x)) for x in val_epoch_iou]) + ']')
         # saving the best status into a weight file
         if val_epoch_pix_accuracy > best_accuracy:
              best_weight_file = Path('weights')/(name + '_best.pth')
@@ -89,7 +97,7 @@ def train(opt):
 def train_one_epoch(train_dataloader, model, optimizer, device):
     model.train()
     losses = [] 
-    for i, (imgs, targets) in enumerate(train_dataloader):
+    for i, (imgs, targets, _) in enumerate(train_dataloader):
         imgs, targets = imgs.to(device), targets.to(device)
         preds = model(imgs)['out']     # forward 
         loss = ce_loss(preds, targets) # calculates the iteration loss  
@@ -101,41 +109,35 @@ def train_one_epoch(train_dataloader, model, optimizer, device):
     return torch.tensor(losses).mean().item()
 
 
-def val_one_epoch(val_dataloader, model, device):
+def val_one_epoch(val_dataloader, model, confusion_matrix, device):
     model.eval()
     losses = []
-    iou_sum = 0
-    pix_accuracy_sum = 0
     total = 0
-    for i, (imgs, targets) in enumerate(val_dataloader):
+    for i, (imgs, targets, img_file) in enumerate(val_dataloader):
         imgs, targets = imgs.to(device), targets.to(device)
         with torch.no_grad():
             preds = model(imgs)['out']   # forward, preds: (B, 2, H, W)
             loss = ce_loss(preds, targets)
-            preds = torch.argmax(preds, axis=1) # (1, H, W)
-            iou, pix_accuracy = fitness_test(preds, targets.long())   
             losses.append(loss.item())
-            iou_sum += iou.sum().item()
-            pix_accuracy_sum += pix_accuracy.sum().item()
+            confusion_matrix.process_batch(preds, targets)
             total += preds.size(0)
             # sample images
             if i == 0:
+                preds = torch.argmax(preds, axis=1) # (1, H, W)  
                 for j in range(3):
-                    save_file = os.path.join('outputs', 'val_%d.png' % j)
+                    save_file = os.path.join('outputs', 'val_%d.png' % (j))
                     plot_image(imgs[j], preds[j], save_file)
                 
-            
     avg_loss = torch.tensor(losses).mean().item()
-    avg_iou = iou_sum/total
-    avg_pix_accuracy = pix_accuracy_sum/total
-    return avg_loss, avg_iou, avg_pix_accuracy
+    
+    return avg_loss
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=250, help='target epochs')
-    parser.add_argument('--batch-size', type=int, default=16, help='batch size')
-    parser.add_argument('--name', default='ohhan_no_amp', help='name for the run')
+    parser.add_argument('--batch-size', type=int, default=128, help='batch size')
+    parser.add_argument('--name', default='ohhan_road', help='name for the run')
 
     opt = parser.parse_args()
 
