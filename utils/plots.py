@@ -70,10 +70,19 @@ def plot_image(img, label=None, save_file='image.png', alpha=0.3):
             label = label.cpu().numpy().astype(np.uint8)
             color_label = make_color_label(label)
             label = color_label
+        else:
+            color_label = make_color_label(label)
+            label = color_label
         # overlay images
         img = cv2.addWeighted(img, 1.0, label, alpha, 0)
     # save image
     cv2.imwrite(save_file, img)
 
 img_file = 'data/kari-road/train/images/BLD11166_PS3_K3A_NIA0390.png'
-plot_image_label_file(img_file)
+# img_file = 'data/kari-road/train/images/BLD00018_PS3_K3A_NIA0276.png'
+img = cv2.imread(img_file)
+label_file = img_file.replace('images', 'labels')
+label = cv2.imread(label_file, cv2.IMREAD_GRAYSCALE)
+color_label = make_color_label_file(label_file)
+cv2.imwrite('outputs/label1.png', color_label)
+plot_image(img, label, 'outputs/image1.png')

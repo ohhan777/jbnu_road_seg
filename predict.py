@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import cv2
-from utils.utils import plot_image
+from utils.plots import plot_image
 import argparse
 from torchvision import models
 
@@ -42,7 +42,7 @@ def predict(opt):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', '-i', type=str, required=True, help='input image')
-    parser.add_argument('--weight', '-w', default='weights/ohhan_no_amp_best.pth',
+    parser.add_argument('--weight', '-w', default='weights/ohhan_best.pth',
                         help='weight file path')
     opt = parser.parse_args()
 

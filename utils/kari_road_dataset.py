@@ -20,9 +20,9 @@ class KariRoadDataset(torch.utils.data.Dataset):
         img_file= self.img_files[idx].as_posix()
         label_file = img_file.replace('images', 'labels')
         img = cv2.imread(img_file)
-        label_img = cv2.imread(label_file, cv2.IMREAD_GRAYSCALE)
-        img, label_img = self.transform(img, label_img)
-        return img, label_img, img_file
+        label = cv2.imread(label_file, cv2.IMREAD_GRAYSCALE)
+        img, label = self.transform(img, label)
+        return img, label, img_file
 
     def __len__(self):
         return len(self.img_files)
@@ -38,8 +38,8 @@ class ImageAug:
         else:
             self.aug = ToTensorV2()
 
-    def __call__(self, img, label_img):
-        transformed = self.aug(image=img, mask=np.squeeze(label_img))
+    def __call__(self, img, label):
+        transformed = self.aug(image=img, mask=np.squeeze(label))
         return transformed['image']/255.0, transformed['mask']
 
 def get_transforms(train):
